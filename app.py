@@ -74,8 +74,12 @@ def process_image_read(node, inputs):
         return {'image': image_store[img_id].copy()}
     # Try file path
     filepath = props.get('filepath', '')
+    flags_str = props.get('flags', 'IMREAD_COLOR')
+    flags = getattr(cv2, flags_str, cv2.IMREAD_COLOR)
     if filepath and os.path.exists(filepath):
-        img = cv2.imread(filepath)
+        img = cv2.imread(filepath, flags)
+        if img is not None and len(img.shape) == 2:
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
         return {'image': img}
     # Try inline base64 (fallback for compat)
     image_data = props.get('imageData', '')
@@ -330,7 +334,7 @@ def process_laplacian(node, inputs):
 
 
 def process_find_contours(node, inputs):
-    """Find and draw contours."""
+    """Find contours and output them as data for drawing/analysis nodes."""
     img = inputs.get('image')
     if img is None:
         return {'image': None, 'error': 'No input image'}
@@ -343,7 +347,7 @@ def process_find_contours(node, inputs):
     contours, hierarchy = cv2.findContours(gray, mode, method)
     result = img.copy() if len(img.shape) == 3 else cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
     cv2.drawContours(result, contours, -1, (0, 255, 0), 2)
-    return {'image': result, 'info': f'Found {len(contours)} contours'}
+    return {'image': result, 'contours': contours, 'info': f'Found {len(contours)} contours'}
 
 
 def process_hough_lines(node, inputs):
@@ -413,8 +417,20 @@ def process_python_script(node, inputs):
         return {'image': img, 'error': f'Script error: {e}'}
 
 
+def _prepare_mask(mask, target_shape):
+    """Helper: prepare mask for bitwise operations (ensure 8-bit single channel, matching size)."""
+    if mask is None:
+        return None
+    if len(mask.shape) == 3:
+        mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
+    h, w = target_shape[:2]
+    if mask.shape[0] != h or mask.shape[1] != w:
+        mask = cv2.resize(mask, (w, h))
+    return mask
+
+
 def process_bitwise_and(node, inputs):
-    """Bitwise AND of two images."""
+    """Bitwise AND of two images with optional mask."""
     img = inputs.get('image')
     img2 = inputs.get('image2')
     if img is None:
@@ -423,12 +439,13 @@ def process_bitwise_and(node, inputs):
         return {'image': img, 'error': 'No input image on port 2, passing through port 1'}
     if img.shape != img2.shape:
         img2 = cv2.resize(img2, (img.shape[1], img.shape[0]))
-    result = cv2.bitwise_and(img, img2)
+    mask = _prepare_mask(inputs.get('mask'), img.shape)
+    result = cv2.bitwise_and(img, img2, mask=mask)
     return {'image': result}
 
 
 def process_bitwise_or(node, inputs):
-    """Bitwise OR of two images."""
+    """Bitwise OR of two images with optional mask."""
     img = inputs.get('image')
     img2 = inputs.get('image2')
     if img is None:
@@ -437,16 +454,18 @@ def process_bitwise_or(node, inputs):
         return {'image': img, 'error': 'No input image on port 2, passing through port 1'}
     if img.shape != img2.shape:
         img2 = cv2.resize(img2, (img.shape[1], img.shape[0]))
-    result = cv2.bitwise_or(img, img2)
+    mask = _prepare_mask(inputs.get('mask'), img.shape)
+    result = cv2.bitwise_or(img, img2, mask=mask)
     return {'image': result}
 
 
 def process_bitwise_not(node, inputs):
-    """Bitwise NOT."""
+    """Bitwise NOT with optional mask."""
     img = inputs.get('image')
     if img is None:
         return {'image': None, 'error': 'No input image'}
-    result = cv2.bitwise_not(img)
+    mask = _prepare_mask(inputs.get('mask'), img.shape)
+    result = cv2.bitwise_not(img, mask=mask)
     return {'image': result}
 
 
@@ -684,12 +703,16 @@ def process_image_write(node, inputs):
     """Save image to file."""
     img = inputs.get('image')
     if img is None:
-        return {'image': None, 'error': 'No input image'}
+        return {'error': 'No input image'}
     props = node.get('properties', {})
     filepath = props.get('filepath', 'output.png')
     fmt = props.get('format', 'png').lower()
     quality = int(props.get('quality', 95))
     try:
+        # Create parent directory if it doesn't exist
+        out_dir = os.path.dirname(filepath)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
         if fmt in ('jpg', 'jpeg'):
             params = [cv2.IMWRITE_JPEG_QUALITY, quality]
         elif fmt == 'png':
@@ -697,9 +720,19 @@ def process_image_write(node, inputs):
         else:
             params = []
         cv2.imwrite(filepath, img, params)
-        return {'image': img, 'info': f'Saved to {filepath}'}
+        return {'image': img, 'info': f'Saved: {filepath}'}
     except Exception as e:
-        return {'image': img, 'error': f'Failed to save: {e}'}
+        return {'error': f'Failed to save: {e}'}
+
+
+def process_video_write(node, inputs):
+    """Write video output. Actual writing happens in execute_video_loop; single execution just passes through."""
+    img = inputs.get('image')
+    if img is None:
+        return {'image': None, 'error': 'No input image'}
+    props = node.get('properties', {})
+    filepath = props.get('filepath', 'output.mp4')
+    return {'image': img, 'info': f'Video Write → {filepath} (use Video Loop to record)'}
 
 
 def process_video_read(node, inputs):
@@ -928,27 +961,31 @@ def _get_contour_color(props):
 
 
 def process_draw_contours(node, inputs):
-    """Find and draw contours with custom color."""
+    """Draw contours from Find Contours node."""
     img = inputs.get('image')
     if img is None:
         return {'image': None, 'error': 'No input image'}
+    contours = inputs.get('contours')
+    if contours is None:
+        return {'image': img, 'error': 'No contours input. Connect Find Contours node.'}
     props = node.get('properties', {})
-    contours, _ = _get_contours(img, props)
     contour_idx = int(props.get('contourIdx', -1))
     thickness = int(props.get('thickness', 2))
     color = _get_contour_color(props)
     result = img.copy() if len(img.shape) == 3 else cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
     cv2.drawContours(result, contours, contour_idx, color, thickness)
-    return {'image': result, 'info': f'Found {len(contours)} contours'}
+    return {'image': result, 'info': f'Drew {len(contours)} contours'}
 
 
 def process_bounding_rect(node, inputs):
-    """Find contours and draw bounding rectangles."""
+    """Draw bounding rectangles around contours."""
     img = inputs.get('image')
     if img is None:
         return {'image': None, 'error': 'No input image'}
+    contours = inputs.get('contours')
+    if contours is None:
+        return {'image': img, 'error': 'No contours input. Connect Find Contours node.'}
     props = node.get('properties', {})
-    contours, _ = _get_contours(img, props)
     thickness = int(props.get('thickness', 2))
     color = _get_contour_color(props)
     result = img.copy() if len(img.shape) == 3 else cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
@@ -959,12 +996,14 @@ def process_bounding_rect(node, inputs):
 
 
 def process_min_enclosing_circle(node, inputs):
-    """Find contours and draw minimum enclosing circles."""
+    """Draw minimum enclosing circles around contours."""
     img = inputs.get('image')
     if img is None:
         return {'image': None, 'error': 'No input image'}
+    contours = inputs.get('contours')
+    if contours is None:
+        return {'image': img, 'error': 'No contours input. Connect Find Contours node.'}
     props = node.get('properties', {})
-    contours, _ = _get_contours(img, props)
     thickness = int(props.get('thickness', 2))
     color = _get_contour_color(props)
     result = img.copy() if len(img.shape) == 3 else cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
@@ -976,12 +1015,14 @@ def process_min_enclosing_circle(node, inputs):
 
 
 def process_convex_hull(node, inputs):
-    """Find contours and draw convex hulls."""
+    """Draw convex hulls around contours."""
     img = inputs.get('image')
     if img is None:
         return {'image': None, 'error': 'No input image'}
+    contours = inputs.get('contours')
+    if contours is None:
+        return {'image': img, 'error': 'No contours input. Connect Find Contours node.'}
     props = node.get('properties', {})
-    contours, _ = _get_contours(img, props)
     thickness = int(props.get('thickness', 2))
     color = _get_contour_color(props)
     result = img.copy() if len(img.shape) == 3 else cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
@@ -991,12 +1032,14 @@ def process_convex_hull(node, inputs):
 
 
 def process_approx_poly(node, inputs):
-    """Find contours and approximate with polygons."""
+    """Approximate contour shapes to polygons and draw them."""
     img = inputs.get('image')
     if img is None:
         return {'image': None, 'error': 'No input image'}
+    contours = inputs.get('contours')
+    if contours is None:
+        return {'image': img, 'error': 'No contours input. Connect Find Contours node.'}
     props = node.get('properties', {})
-    contours, _ = _get_contours(img, props)
     epsilon_pct = float(props.get('epsilon', 0.02))
     closed = props.get('closed', True)
     if isinstance(closed, str):
@@ -1014,12 +1057,14 @@ def process_approx_poly(node, inputs):
 
 
 def process_contour_area(node, inputs):
-    """Find contours, filter by area, and draw."""
+    """Filter contours by area range and draw matching ones."""
     img = inputs.get('image')
     if img is None:
         return {'image': None, 'error': 'No input image'}
+    contours = inputs.get('contours')
+    if contours is None:
+        return {'image': img, 'error': 'No contours input. Connect Find Contours node.'}
     props = node.get('properties', {})
-    contours, _ = _get_contours(img, props)
     min_area = float(props.get('minArea', 0))
     max_area = float(props.get('maxArea', 1e9))
     thickness = int(props.get('thickness', 2))
@@ -1031,12 +1076,14 @@ def process_contour_area(node, inputs):
 
 
 def process_contour_properties(node, inputs):
-    """Find contours and display their properties as text."""
+    """Annotate contours with area, perimeter, and center info."""
     img = inputs.get('image')
     if img is None:
         return {'image': None, 'error': 'No input image'}
+    contours = inputs.get('contours')
+    if contours is None:
+        return {'image': img, 'error': 'No contours input. Connect Find Contours node.'}
     props = node.get('properties', {})
-    contours, _ = _get_contours(img, props)
     show_area = props.get('showArea', True)
     show_perimeter = props.get('showPerimeter', True)
     show_center = props.get('showCenter', True)
@@ -1520,7 +1567,7 @@ def process_absdiff(node, inputs):
 
 
 def process_bitwise_xor(node, inputs):
-    """Bitwise XOR of two images."""
+    """Bitwise XOR of two images with optional mask."""
     img = inputs.get('image')
     img2 = inputs.get('image2')
     if img is None:
@@ -1529,7 +1576,8 @@ def process_bitwise_xor(node, inputs):
         return {'image': img, 'error': 'No input image on port 2, passing through port 1'}
     if img.shape != img2.shape:
         img2 = cv2.resize(img2, (img.shape[1], img.shape[0]))
-    result = cv2.bitwise_xor(img, img2)
+    mask = _prepare_mask(inputs.get('mask'), img.shape)
+    result = cv2.bitwise_xor(img, img2, mask=mask)
     return {'image': result}
 
 
@@ -1937,6 +1985,7 @@ NODE_PROCESSORS = {
     'control_switch': process_control_switch,
     # IO
     'image_write': process_image_write,
+    'video_write': process_video_write,
     'video_read': process_video_read,
     'camera_capture': process_camera_capture,
     # Color
@@ -2120,6 +2169,48 @@ def upload_video():
     })
 
 
+@app.route('/api/save_dialog', methods=['POST'])
+def save_dialog():
+    """Open a native file save dialog and return selected path."""
+    data = request.json or {}
+    title = data.get('title', 'Save File')
+    default_ext = data.get('defaultExt', '.png')
+    filetypes_raw = data.get('filetypes', [])
+    initial_file = data.get('initialFile', '')
+    try:
+        import threading
+        result = [None]
+        def run_dialog():
+            try:
+                import tkinter as tk
+                from tkinter import filedialog
+                root = tk.Tk()
+                root.withdraw()
+                root.attributes('-topmost', True)
+                ftypes = []
+                for ft in filetypes_raw:
+                    ftypes.append((ft.get('name', ''), ft.get('ext', '*.*')))
+                if not ftypes:
+                    ftypes = [('All files', '*.*')]
+                path = filedialog.asksaveasfilename(
+                    title=title,
+                    defaultextension=default_ext,
+                    filetypes=ftypes,
+                    initialfile=initial_file,
+                    parent=root
+                )
+                root.destroy()
+                result[0] = path
+            except Exception as e:
+                result[0] = ''
+        t = threading.Thread(target=run_dialog)
+        t.start()
+        t.join(timeout=60)
+        return jsonify({'path': result[0] or ''})
+    except Exception as e:
+        return jsonify({'path': '', 'error': str(e)})
+
+
 @app.route('/api/stop_video_loop', methods=['POST'])
 def stop_video_loop():
     """Signal the video loop to stop."""
@@ -2228,15 +2319,15 @@ def execute_video_loop():
                     except Exception as e:
                         results[nid] = {'error': str(e)}
 
-                    # VideoWriter: write frame for image_write nodes with videoOutput
-                    if node_type == 'image_write' and node.get('properties', {}).get('videoOutput'):
+                    # VideoWriter: write frame for video_write nodes
+                    if node_type == 'video_write':
                         nprops = node.get('properties', {})
                         if nid not in writers:
                             out_path = nprops.get('filepath', 'output.mp4')
                             if not out_path.lower().endswith(('.mp4', '.avi', '.mkv')):
                                 out_path = os.path.splitext(out_path)[0] + '.mp4'
-                            codec_str = nprops.get('videoCodec', 'mp4v')
-                            fps = float(nprops.get('videoFps', 0)) or src_fps
+                            codec_str = nprops.get('codec', 'mp4v')
+                            fps = float(nprops.get('fps', 0)) or src_fps
                             fourcc = cv2.VideoWriter_fourcc(*codec_str)
                             h, w = first_frame_shape[:2]
                             writers[nid] = cv2.VideoWriter(out_path, fourcc, fps, (w, h))
@@ -2514,7 +2605,7 @@ def generate_python_code(nodes, connections):
                 src_node = node_map.get(src_id)
                 src_type = src_node.get('type', '') if src_node else ''
                 # Multi-output nodes
-                if src_type in ('control_if', 'control_switch', 'split_channels', 'template_match'):
+                if src_type in ('control_if', 'control_switch', 'split_channels', 'template_match', 'find_contours'):
                     return var_name(src_id, '_' + src_port)
                 else:
                     return var_name(src_id)
@@ -2530,8 +2621,11 @@ def generate_python_code(nodes, connections):
 
         if ntype == 'image_read':
             fp = props.get('filepath', '') or props.get('filename', 'input.jpg')
+            flags_str = props.get('flags', 'IMREAD_COLOR')
             lines.append(f'# Image Read')
-            lines.append(f'{out} = cv2.imread(r"{fp}")')
+            lines.append(f'{out} = cv2.imread(r"{fp}", cv2.{flags_str})')
+            if flags_str == 'IMREAD_GRAYSCALE':
+                lines.append(f'{out} = cv2.cvtColor({out}, cv2.COLOR_GRAY2BGR)')
             lines.append('')
 
         elif ntype == 'image_show':
@@ -2681,11 +2775,13 @@ def generate_python_code(nodes, connections):
         elif ntype == 'find_contours':
             mode = props.get('mode', 'RETR_EXTERNAL')
             method = props.get('method', 'CHAIN_APPROX_SIMPLE')
+            out_img = var_name(nid, '_image')
+            out_contours = var_name(nid, '_contours')
             lines.append(f'# Find Contours')
             lines.append(f'_gray = cv2.cvtColor({src}, cv2.COLOR_BGR2GRAY) if len({src}.shape) == 3 else {src}')
-            lines.append(f'_contours, _ = cv2.findContours(_gray, cv2.{mode}, cv2.{method})')
-            lines.append(f'{out} = {src}.copy()')
-            lines.append(f'cv2.drawContours({out}, _contours, -1, (0, 255, 0), 2)')
+            lines.append(f'{out_contours}, _ = cv2.findContours(_gray, cv2.{mode}, cv2.{method})')
+            lines.append(f'{out_img} = {src}.copy() if len({src}.shape) == 3 else cv2.cvtColor({src}, cv2.COLOR_GRAY2BGR)')
+            lines.append(f'cv2.drawContours({out_img}, {out_contours}, -1, (0, 255, 0), 2)')
             lines.append('')
 
         elif ntype == 'hough_lines':
@@ -2716,18 +2812,33 @@ def generate_python_code(nodes, connections):
             lines.append('')
 
         elif ntype == 'bitwise_and':
+            src_mask = get_src_var(nid, 'mask')
             lines.append(f'# Bitwise AND')
-            lines.append(f'{out} = cv2.bitwise_and({src}, {src2})')
+            if src_mask != 'None':
+                lines.append(f'_mask = cv2.cvtColor({src_mask}, cv2.COLOR_BGR2GRAY) if len({src_mask}.shape) == 3 else {src_mask}')
+                lines.append(f'{out} = cv2.bitwise_and({src}, {src2}, mask=_mask)')
+            else:
+                lines.append(f'{out} = cv2.bitwise_and({src}, {src2})')
             lines.append('')
 
         elif ntype == 'bitwise_or':
+            src_mask = get_src_var(nid, 'mask')
             lines.append(f'# Bitwise OR')
-            lines.append(f'{out} = cv2.bitwise_or({src}, {src2})')
+            if src_mask != 'None':
+                lines.append(f'_mask = cv2.cvtColor({src_mask}, cv2.COLOR_BGR2GRAY) if len({src_mask}.shape) == 3 else {src_mask}')
+                lines.append(f'{out} = cv2.bitwise_or({src}, {src2}, mask=_mask)')
+            else:
+                lines.append(f'{out} = cv2.bitwise_or({src}, {src2})')
             lines.append('')
 
         elif ntype == 'bitwise_not':
+            src_mask = get_src_var(nid, 'mask')
             lines.append(f'# Bitwise NOT')
-            lines.append(f'{out} = cv2.bitwise_not({src})')
+            if src_mask != 'None':
+                lines.append(f'_mask = cv2.cvtColor({src_mask}, cv2.COLOR_BGR2GRAY) if len({src_mask}.shape) == 3 else {src_mask}')
+                lines.append(f'{out} = cv2.bitwise_not({src}, mask=_mask)')
+            else:
+                lines.append(f'{out} = cv2.bitwise_not({src})')
             lines.append('')
 
         elif ntype == 'histogram_eq':
@@ -2899,6 +3010,20 @@ def generate_python_code(nodes, connections):
             lines.append(f'{out} = {src}')
             lines.append('')
 
+        elif ntype == 'video_write':
+            fp = props.get('filepath', 'output.mp4')
+            codec = props.get('codec', 'mp4v')
+            fps = int(props.get('fps', 30))
+            lines.append(f'# Video Write')
+            lines.append(f'if "_vw_{nid}" not in dir():')
+            lines.append(f'    _h, _w = {src}.shape[:2]')
+            lines.append(f'    _vw_{nid} = cv2.VideoWriter(r"{fp}", cv2.VideoWriter_fourcc(*"{codec}"), {fps}, (_w, _h))')
+            lines.append(f'_vw_frame = {src}')
+            lines.append(f'if len(_vw_frame.shape) == 2: _vw_frame = cv2.cvtColor(_vw_frame, cv2.COLOR_GRAY2BGR)')
+            lines.append(f'_vw_{nid}.write(_vw_frame)')
+            lines.append(f'{out} = {src}')
+            lines.append('')
+
         elif ntype == 'video_read':
             fp = props.get('filepath', '')
             mode = props.get('mode', 'single')
@@ -3020,75 +3145,90 @@ def generate_python_code(nodes, connections):
 
         # ---- Contour (new) ----
         elif ntype == 'draw_contours':
-            mode = props.get('mode', 'RETR_EXTERNAL')
-            method = props.get('method', 'CHAIN_APPROX_SIMPLE')
-            color = props.get('color', '0,255,0')
+            src_contours = get_src_var(nid, 'contours')
+            contour_idx = int(props.get('contourIdx', -1))
             thickness = int(props.get('thickness', 2))
-            cp = [int(x.strip()) for x in color.split(',')]
+            r = int(props.get('colorR', 0))
+            g = int(props.get('colorG', 255))
+            b = int(props.get('colorB', 0))
             lines.append(f'# Draw Contours')
-            lines.append(f'_gray = cv2.cvtColor({src}, cv2.COLOR_BGR2GRAY) if len({src}.shape) == 3 else {src}')
-            lines.append(f'_contours, _ = cv2.findContours(_gray, cv2.{mode}, cv2.{method})')
             lines.append(f'{out} = {src}.copy() if len({src}.shape) == 3 else cv2.cvtColor({src}, cv2.COLOR_GRAY2BGR)')
-            lines.append(f'cv2.drawContours({out}, _contours, -1, ({cp[0]},{cp[1]},{cp[2]}), {thickness})')
+            lines.append(f'cv2.drawContours({out}, {src_contours}, {contour_idx}, ({b},{g},{r}), {thickness})')
             lines.append('')
 
         elif ntype == 'bounding_rect':
+            src_contours = get_src_var(nid, 'contours')
+            thickness = int(props.get('thickness', 2))
+            r = int(props.get('colorR', 0))
+            g = int(props.get('colorG', 255))
+            b = int(props.get('colorB', 0))
             lines.append(f'# Bounding Rect')
-            lines.append(f'_gray = cv2.cvtColor({src}, cv2.COLOR_BGR2GRAY) if len({src}.shape) == 3 else {src}')
-            lines.append(f'_contours, _ = cv2.findContours(_gray, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)')
             lines.append(f'{out} = {src}.copy() if len({src}.shape) == 3 else cv2.cvtColor({src}, cv2.COLOR_GRAY2BGR)')
-            lines.append(f'for _c in _contours:')
+            lines.append(f'for _c in {src_contours}:')
             lines.append(f'    _x, _y, _w, _h = cv2.boundingRect(_c)')
-            lines.append(f'    cv2.rectangle({out}, (_x, _y), (_x+_w, _y+_h), (0, 255, 0), 2)')
+            lines.append(f'    cv2.rectangle({out}, (_x, _y), (_x+_w, _y+_h), ({b},{g},{r}), {thickness})')
             lines.append('')
 
         elif ntype == 'min_enclosing_circle':
+            src_contours = get_src_var(nid, 'contours')
+            thickness = int(props.get('thickness', 2))
+            r = int(props.get('colorR', 0))
+            g = int(props.get('colorG', 255))
+            b = int(props.get('colorB', 0))
             lines.append(f'# Min Enclosing Circle')
-            lines.append(f'_gray = cv2.cvtColor({src}, cv2.COLOR_BGR2GRAY) if len({src}.shape) == 3 else {src}')
-            lines.append(f'_contours, _ = cv2.findContours(_gray, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)')
             lines.append(f'{out} = {src}.copy() if len({src}.shape) == 3 else cv2.cvtColor({src}, cv2.COLOR_GRAY2BGR)')
-            lines.append(f'for _c in _contours:')
-            lines.append(f'    (_cx, _cy), _r = cv2.minEnclosingCircle(_c)')
-            lines.append(f'    cv2.circle({out}, (int(_cx), int(_cy)), int(_r), (0, 255, 0), 2)')
+            lines.append(f'for _c in {src_contours}:')
+            lines.append(f'    if len(_c) >= 5:')
+            lines.append(f'        (_cx, _cy), _r = cv2.minEnclosingCircle(_c)')
+            lines.append(f'        cv2.circle({out}, (int(_cx), int(_cy)), int(_r), ({b},{g},{r}), {thickness})')
             lines.append('')
 
         elif ntype == 'convex_hull':
+            src_contours = get_src_var(nid, 'contours')
+            thickness = int(props.get('thickness', 2))
+            r = int(props.get('colorR', 0))
+            g = int(props.get('colorG', 255))
+            b = int(props.get('colorB', 0))
             lines.append(f'# Convex Hull')
-            lines.append(f'_gray = cv2.cvtColor({src}, cv2.COLOR_BGR2GRAY) if len({src}.shape) == 3 else {src}')
-            lines.append(f'_contours, _ = cv2.findContours(_gray, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)')
             lines.append(f'{out} = {src}.copy() if len({src}.shape) == 3 else cv2.cvtColor({src}, cv2.COLOR_GRAY2BGR)')
-            lines.append(f'_hulls = [cv2.convexHull(_c) for _c in _contours]')
-            lines.append(f'cv2.drawContours({out}, _hulls, -1, (0, 255, 0), 2)')
+            lines.append(f'_hulls = [cv2.convexHull(_c) for _c in {src_contours}]')
+            lines.append(f'cv2.drawContours({out}, _hulls, -1, ({b},{g},{r}), {thickness})')
             lines.append('')
 
         elif ntype == 'approx_poly':
-            epsilon_pct = float(props.get('epsilon', 2.0))
+            src_contours = get_src_var(nid, 'contours')
+            epsilon_pct = float(props.get('epsilon', 0.02))
+            thickness = int(props.get('thickness', 2))
+            r = int(props.get('colorR', 0))
+            g = int(props.get('colorG', 255))
+            b = int(props.get('colorB', 0))
             lines.append(f'# Approx Poly')
-            lines.append(f'_gray = cv2.cvtColor({src}, cv2.COLOR_BGR2GRAY) if len({src}.shape) == 3 else {src}')
-            lines.append(f'_contours, _ = cv2.findContours(_gray, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)')
             lines.append(f'{out} = {src}.copy() if len({src}.shape) == 3 else cv2.cvtColor({src}, cv2.COLOR_GRAY2BGR)')
-            lines.append(f'for _c in _contours:')
-            lines.append(f'    _eps = {epsilon_pct} / 100.0 * cv2.arcLength(_c, True)')
+            lines.append(f'for _c in {src_contours}:')
+            lines.append(f'    _eps = {epsilon_pct} * cv2.arcLength(_c, True)')
             lines.append(f'    _approx = cv2.approxPolyDP(_c, _eps, True)')
-            lines.append(f'    cv2.drawContours({out}, [_approx], -1, (0, 255, 0), 2)')
+            lines.append(f'    cv2.drawContours({out}, [_approx], -1, ({b},{g},{r}), {thickness})')
             lines.append('')
 
         elif ntype == 'contour_area':
+            src_contours = get_src_var(nid, 'contours')
             min_area = float(props.get('minArea', 100))
+            max_area = float(props.get('maxArea', 100000))
+            thickness = int(props.get('thickness', 2))
+            r = int(props.get('colorR', 0))
+            g = int(props.get('colorG', 255))
+            b = int(props.get('colorB', 0))
             lines.append(f'# Contour Area Filter')
-            lines.append(f'_gray = cv2.cvtColor({src}, cv2.COLOR_BGR2GRAY) if len({src}.shape) == 3 else {src}')
-            lines.append(f'_contours, _ = cv2.findContours(_gray, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)')
             lines.append(f'{out} = {src}.copy() if len({src}.shape) == 3 else cv2.cvtColor({src}, cv2.COLOR_GRAY2BGR)')
-            lines.append(f'_filtered = [_c for _c in _contours if cv2.contourArea(_c) >= {min_area}]')
-            lines.append(f'cv2.drawContours({out}, _filtered, -1, (0, 255, 0), 2)')
+            lines.append(f'_filtered = [_c for _c in {src_contours} if {min_area} <= cv2.contourArea(_c) <= {max_area}]')
+            lines.append(f'cv2.drawContours({out}, _filtered, -1, ({b},{g},{r}), {thickness})')
             lines.append('')
 
         elif ntype == 'contour_properties':
+            src_contours = get_src_var(nid, 'contours')
             lines.append(f'# Contour Properties')
-            lines.append(f'_gray = cv2.cvtColor({src}, cv2.COLOR_BGR2GRAY) if len({src}.shape) == 3 else {src}')
-            lines.append(f'_contours, _ = cv2.findContours(_gray, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)')
             lines.append(f'{out} = {src}.copy() if len({src}.shape) == 3 else cv2.cvtColor({src}, cv2.COLOR_GRAY2BGR)')
-            lines.append(f'for _i, _c in enumerate(_contours):')
+            lines.append(f'for _i, _c in enumerate({src_contours}):')
             lines.append(f'    _area = cv2.contourArea(_c)')
             lines.append(f'    _peri = cv2.arcLength(_c, True)')
             lines.append(f'    _x, _y, _w, _h = cv2.boundingRect(_c)')
@@ -3332,8 +3472,13 @@ def generate_python_code(nodes, connections):
             lines.append('')
 
         elif ntype == 'bitwise_xor':
+            src_mask = get_src_var(nid, 'mask')
             lines.append(f'# Bitwise XOR')
-            lines.append(f'{out} = cv2.bitwise_xor({src}, {src2})')
+            if src_mask != 'None':
+                lines.append(f'_mask = cv2.cvtColor({src_mask}, cv2.COLOR_BGR2GRAY) if len({src_mask}.shape) == 3 else {src_mask}')
+                lines.append(f'{out} = cv2.bitwise_xor({src}, {src2}, mask=_mask)')
+            else:
+                lines.append(f'{out} = cv2.bitwise_xor({src}, {src2})')
             lines.append('')
 
         # ---- Detection (new) ----

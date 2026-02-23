@@ -67,16 +67,18 @@
     // ===== Port data-type compatibility =====
     const PORT_TYPE_MAP = {
         // Image types (numpy.ndarray)
-        'image': 'image', 'image2': 'image',
+        'image': 'image', 'image2': 'image', 'mask': 'image',
         'ch0': 'image', 'ch1': 'image', 'ch2': 'image',
         'true': 'image', 'false': 'image',
         'case0': 'image', 'case1': 'image', 'case2': 'image',
+        // Contours type (list of numpy arrays from findContours)
+        'contours': 'contours',
         // List / coordinate types
         'list': 'list', 'coords': 'list', 'matches': 'list',
         // Value types (number / bool / point / scalar)
         'value': 'value', 'a': 'value', 'b': 'value',
     };
-    const PORT_TYPE_LABELS = { image: '이미지', list: '리스트', value: '값' };
+    const PORT_TYPE_LABELS = { image: '이미지', contours: '컨투어', list: '리스트', value: '값' };
 
     function getPortDataType(portId) {
         return PORT_TYPE_MAP[portId] || 'any';
@@ -90,7 +92,9 @@
 
     // ===== Smart preview: image-output nodes show preview, value-only nodes show info text =====
     const IMAGE_OUTPUT_IDS = new Set(['image', 'ch0', 'ch1', 'ch2', 'true', 'false', 'case0', 'case1', 'case2']);
+    const IMAGE_INPUT_SINK_NODES = new Set(['image_show', 'image_write', 'video_write']);
     function nodeNeedsImagePreview(nodeType) {
+        if (IMAGE_INPUT_SINK_NODES.has(nodeType)) return true;
         const def = NODE_DEFS[nodeType];
         if (!def) return false;
         return def.outputs.some(o => IMAGE_OUTPUT_IDS.has(o.id));
@@ -320,6 +324,7 @@
                 x: node.x,
                 y: node.y + spacing * (i + 1),
                 type: 'input',
+                optional: !!port.optional,
             };
         });
     }
@@ -650,16 +655,19 @@
     }
 
     function drawPort(port, color, type, connected) {
+        const isOptional = !!port.optional;
         ctx.fillStyle = connected ? color : '#2a2a40';
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 2;
+        ctx.strokeStyle = isOptional && !connected ? '#7f849c' : color;
+        ctx.lineWidth = isOptional && !connected ? 1.5 : 2;
+        if (isOptional && !connected) ctx.setLineDash([3, 3]);
         ctx.beginPath();
         ctx.arc(port.x, port.y, PORT_RADIUS, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
+        if (isOptional && !connected) ctx.setLineDash([]);
 
         // Port label (drawn OUTSIDE the node so it never overlaps the node name)
-        ctx.fillStyle = '#7f849c';
+        ctx.fillStyle = isOptional ? '#585b70' : '#7f849c';
         ctx.font = '9px "Segoe UI", sans-serif';
         ctx.textBaseline = 'middle';
         if (type === 'input') {
@@ -1183,6 +1191,21 @@
         }
     });
 
+    // ===== Annotate palette nodes with OpenCV function names =====
+    document.querySelectorAll('.palette-node').forEach(el => {
+        const def = NODE_DEFS[el.dataset.type];
+        if (!def || !def.doc || !def.doc.signature) return;
+        const sig = def.doc.signature;
+        // Extract function name from "cv2.funcName(...)" pattern
+        const m = sig.match(/cv2\.(\w+)\s*\(/);
+        if (m) {
+            const fnSpan = document.createElement('span');
+            fnSpan.style.cssText = 'color:#7f849c;font-size:10px;margin-left:3px';
+            fnSpan.textContent = `(${m[1]})`;
+            el.appendChild(fnSpan);
+        }
+    });
+
     // ===== Drag and drop from palette =====
     document.querySelectorAll('.palette-node').forEach(el => {
         el.addEventListener('dragstart', (e) => {
@@ -1284,8 +1307,13 @@
                 if (prop.max !== undefined) attrs.push(`max="${prop.max}"`);
                 if (prop.step !== undefined) attrs.push(`step="${prop.step}"`);
                 const val = node.properties[prop.key] !== undefined ? node.properties[prop.key] : (prop.default || '');
+                // filepath with Browse button for write nodes
+                const isWriteFilePath = prop.key === 'filepath' && (node.type === 'image_write' || node.type === 'video_write');
                 html += `<div class="prop-row"><label>${prop.label}</label>
-                    <input type="${prop.type}" value="${escapeAttr(String(val))}" data-prop="${prop.key}" ${attrs.join(' ')}></div>`;
+                    <div style="display:flex;gap:4px;flex:1">
+                    <input type="${prop.type}" value="${escapeAttr(String(val))}" data-prop="${prop.key}" ${attrs.join(' ')} style="flex:1">
+                    ${isWriteFilePath ? `<button class="prop-btn" data-browse="${node.type}" style="padding:2px 8px;white-space:nowrap">Browse</button>` : ''}
+                    </div></div>`;
             }
         }
 
@@ -1295,6 +1323,35 @@
         </div>`;
 
         el.innerHTML = html;
+
+        // Browse button for save file path
+        el.querySelectorAll('[data-browse]').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const nodeType = btn.dataset.browse;
+                const isVideo = nodeType === 'video_write';
+                const body = {
+                    title: isVideo ? 'Save Video File' : 'Save Image File',
+                    defaultExt: isVideo ? '.mp4' : '.png',
+                    filetypes: isVideo
+                        ? [{ name: 'MP4 Video', ext: '*.mp4' }, { name: 'AVI Video', ext: '*.avi' }, { name: 'All files', ext: '*.*' }]
+                        : [{ name: 'PNG Image', ext: '*.png' }, { name: 'JPEG Image', ext: '*.jpg;*.jpeg' }, { name: 'BMP Image', ext: '*.bmp' }, { name: 'All files', ext: '*.*' }],
+                    initialFile: node.properties.filepath || ''
+                };
+                try {
+                    const res = await fetch('/api/save_dialog', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+                    const data = await res.json();
+                    if (data.path) {
+                        pushUndo();
+                        node.properties.filepath = data.path;
+                        const fpInput = el.querySelector('[data-prop="filepath"]');
+                        if (fpInput) fpInput.value = data.path;
+                        setStatus(`Save path: ${data.path}`, '');
+                    }
+                } catch (e) {
+                    setStatus('Failed to open save dialog', 'error');
+                }
+            });
+        });
 
         // Bind events
         el.querySelectorAll('[data-prop]').forEach(input => {

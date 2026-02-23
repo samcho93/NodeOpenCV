@@ -10,7 +10,9 @@ const NODE_DEFS = {
         outputs: [{ id: 'image', label: 'image' }],
         properties: [
             { key: 'filepath', label: 'File Path', type: 'text', default: '' },
-            { key: '_upload', label: 'Upload Image', type: 'file' }
+            { key: '_upload', label: 'Upload Image', type: 'file' },
+            { key: 'flags', label: 'Flags', type: 'select', default: 'IMREAD_COLOR',
+              options: ['IMREAD_COLOR', 'IMREAD_GRAYSCALE', 'IMREAD_UNCHANGED'] }
         ],
         doc: {
             signature: 'cv2.imread(filename, flags=cv2.IMREAD_COLOR)',
@@ -28,7 +30,7 @@ const NODE_DEFS = {
         category: 'io',
         color: '#2196F3',
         inputs: [{ id: 'image', label: 'image' }],
-        outputs: [{ id: 'image', label: 'image' }],
+        outputs: [],
         properties: [
             { key: 'windowName', label: 'Window Name', type: 'text', default: 'Output' }
         ],
@@ -441,10 +443,10 @@ const NODE_DEFS = {
 
     find_contours: {
         label: 'Find Contours',
-        category: 'feature',
-        color: '#CDDC39',
+        category: 'contour',
+        color: '#009688',
         inputs: [{ id: 'image', label: 'image' }],
-        outputs: [{ id: 'image', label: 'image' }],
+        outputs: [{ id: 'contours', label: 'contours' }],
         properties: [
             { key: 'mode', label: 'Retrieval Mode', type: 'select', default: 'RETR_EXTERNAL',
               options: ['RETR_EXTERNAL', 'RETR_LIST', 'RETR_CCOMP', 'RETR_TREE']
@@ -455,7 +457,7 @@ const NODE_DEFS = {
         ],
         doc: {
             signature: 'cv2.findContours(image, mode, method[, contours[, hierarchy[, offset]]])',
-            description: 'Finds contours in a binary image. Works best on thresholded/edge-detected images.',
+            description: 'Finds contours in a binary image. Outputs the detected contours for use by drawing/analysis nodes.',
             params: [
                 { name: 'image', desc: 'Source image (8-bit single-channel). Non-zero pixels are treated as 1s.' },
                 { name: 'mode', desc: 'Contour retrieval mode: RETR_EXTERNAL (outermost), RETR_LIST (all), RETR_TREE (full hierarchy)' },
@@ -518,16 +520,16 @@ const NODE_DEFS = {
         label: 'Bitwise AND',
         category: 'arithmetic',
         color: '#3F51B5',
-        inputs: [{ id: 'image', label: 'image' }, { id: 'image2', label: 'image2' }],
+        inputs: [{ id: 'image', label: 'image' }, { id: 'image2', label: 'image2' }, { id: 'mask', label: 'mask', optional: true }],
         outputs: [{ id: 'image', label: 'image' }],
         properties: [],
         doc: {
             signature: 'cv2.bitwise_and(src1, src2[, dst[, mask]])',
-            description: 'Computes bitwise conjunction of two arrays or an array and a scalar.',
+            description: 'Computes bitwise conjunction of two arrays. If mask is provided, operation is applied only where mask is non-zero.',
             params: [
-                { name: 'src1', desc: 'First input array or scalar' },
-                { name: 'src2', desc: 'Second input array or scalar' },
-                { name: 'mask', desc: 'Optional operation mask, 8-bit single channel array' }
+                { name: 'src1', desc: 'First input array' },
+                { name: 'src2', desc: 'Second input array' },
+                { name: 'mask', desc: 'Optional 8-bit single channel mask. Operation applied only where mask is non-zero.' }
             ],
             returns: 'numpy.ndarray - Output array that has the same size and type as the input arrays'
         }
@@ -537,16 +539,16 @@ const NODE_DEFS = {
         label: 'Bitwise OR',
         category: 'arithmetic',
         color: '#3F51B5',
-        inputs: [{ id: 'image', label: 'image' }, { id: 'image2', label: 'image2' }],
+        inputs: [{ id: 'image', label: 'image' }, { id: 'image2', label: 'image2' }, { id: 'mask', label: 'mask', optional: true }],
         outputs: [{ id: 'image', label: 'image' }],
         properties: [],
         doc: {
             signature: 'cv2.bitwise_or(src1, src2[, dst[, mask]])',
-            description: 'Computes bitwise disjunction of two arrays or an array and a scalar.',
+            description: 'Computes bitwise disjunction of two arrays. If mask is provided, operation is applied only where mask is non-zero.',
             params: [
-                { name: 'src1', desc: 'First input array or scalar' },
-                { name: 'src2', desc: 'Second input array or scalar' },
-                { name: 'mask', desc: 'Optional operation mask, 8-bit single channel array' }
+                { name: 'src1', desc: 'First input array' },
+                { name: 'src2', desc: 'Second input array' },
+                { name: 'mask', desc: 'Optional 8-bit single channel mask. Operation applied only where mask is non-zero.' }
             ],
             returns: 'numpy.ndarray - Output array'
         }
@@ -556,15 +558,15 @@ const NODE_DEFS = {
         label: 'Bitwise NOT',
         category: 'arithmetic',
         color: '#3F51B5',
-        inputs: [{ id: 'image', label: 'image' }],
+        inputs: [{ id: 'image', label: 'image' }, { id: 'mask', label: 'mask', optional: true }],
         outputs: [{ id: 'image', label: 'image' }],
         properties: [],
         doc: {
             signature: 'cv2.bitwise_not(src[, dst[, mask]])',
-            description: 'Inverts every bit of an array.',
+            description: 'Inverts every bit of an array. If mask is provided, operation is applied only where mask is non-zero.',
             params: [
                 { name: 'src', desc: 'Input array' },
-                { name: 'mask', desc: 'Optional operation mask, 8-bit single channel array' }
+                { name: 'mask', desc: 'Optional 8-bit single channel mask. Operation applied only where mask is non-zero.' }
             ],
             returns: 'numpy.ndarray - Output array (inverted)'
         }
@@ -716,16 +718,13 @@ img_output = img_input.copy()
     image_write: {
         label: 'Image Write', category: 'io', color: '#8BC34A',
         inputs: [{ id: 'image', label: 'image' }],
-        outputs: [{ id: 'image', label: 'image' }],
+        outputs: [],
         properties: [
             { key: 'filepath', label: 'File Path', type: 'text', default: 'output.png' },
             { key: 'format', label: 'Format', type: 'select', default: 'PNG', options: ['PNG', 'JPEG', 'BMP', 'TIFF'] },
-            { key: 'quality', label: 'Quality', type: 'number', default: 95, min: 1, max: 100 },
-            { key: 'videoOutput', label: 'Video Output (loop mode)', type: 'checkbox', default: false },
-            { key: 'videoCodec', label: 'Video Codec', type: 'select', default: 'mp4v', options: ['mp4v', 'XVID', 'MJPG', 'H264'] },
-            { key: 'videoFps', label: 'Video FPS', type: 'number', default: 30, min: 1, max: 120 }
+            { key: 'quality', label: 'Quality', type: 'number', default: 95, min: 1, max: 100 }
         ],
-        doc: { signature: 'cv2.imwrite(filename, img[, params])', description: 'Saves an image to file. When Video Output is enabled and connected to a Video Read in loop mode, writes all processed frames as a video file.', params: [{ name: 'filename', desc: 'File path to save (video: .mp4/.avi)' }, { name: 'params', desc: 'Format-specific parameters' }], returns: 'bool - True if successful' }
+        doc: { signature: 'cv2.imwrite(filename, img[, params])', description: 'Saves an image to file. Supports PNG, JPEG, BMP, TIFF formats with quality control.', params: [{ name: 'filepath', desc: 'Output file path (e.g., output.png)' }, { name: 'format', desc: 'Image format' }, { name: 'quality', desc: 'JPEG quality (1-100) or PNG compression' }], returns: 'bool - True if saved successfully' }
     },
 
     video_read: {
@@ -752,6 +751,18 @@ img_output = img_input.copy()
             { key: 'cameraIndex', label: 'Camera Index', type: 'number', default: 0, min: 0 }
         ],
         doc: { signature: 'cv2.VideoCapture(index)', description: 'Captures a single frame from a webcam/camera.', params: [{ name: 'index', desc: 'Camera device index (0 = default camera)' }], returns: 'numpy.ndarray - Captured frame' }
+    },
+
+    video_write: {
+        label: 'Video Write', category: 'io', color: '#8BC34A',
+        inputs: [{ id: 'image', label: 'image' }],
+        outputs: [],
+        properties: [
+            { key: 'filepath', label: 'File Path', type: 'text', default: 'output.mp4' },
+            { key: 'codec', label: 'Codec', type: 'select', default: 'mp4v', options: ['mp4v', 'XVID', 'MJPG', 'H264', 'avc1'] },
+            { key: 'fps', label: 'FPS', type: 'number', default: 30, min: 1, max: 120 }
+        ],
+        doc: { signature: 'cv2.VideoWriter(filename, fourcc, fps, frameSize)', description: 'Writes processed frames to a video file. Connect to the end of a pipeline that starts with Video Read (loop mode). Execution collects all loop frames and encodes them into a video.', params: [{ name: 'filepath', desc: 'Output video path (.mp4, .avi)' }, { name: 'codec', desc: 'Video codec (mp4v for .mp4, XVID for .avi)' }, { name: 'fps', desc: 'Frames per second' }], returns: 'Info message with frame count' }
     },
 
     // ---- Color (new) ----
@@ -850,89 +861,77 @@ img_output = img_input.copy()
 
     draw_contours: {
         label: 'Draw Contours', category: 'contour', color: '#009688',
-        inputs: [{ id: 'image', label: 'image' }],
+        inputs: [{ id: 'image', label: 'image' }, { id: 'contours', label: 'contours' }],
         outputs: [{ id: 'image', label: 'image' }],
         properties: [
-            { key: 'mode', label: 'Retrieval Mode', type: 'select', default: 'RETR_EXTERNAL', options: ['RETR_EXTERNAL', 'RETR_LIST', 'RETR_CCOMP', 'RETR_TREE'] },
-            { key: 'method', label: 'Approximation', type: 'select', default: 'CHAIN_APPROX_SIMPLE', options: ['CHAIN_APPROX_NONE', 'CHAIN_APPROX_SIMPLE'] },
             { key: 'contourIdx', label: 'Contour Index (-1=all)', type: 'number', default: -1 },
             { key: 'thickness', label: 'Thickness', type: 'number', default: 2, min: 1 },
             { key: 'colorR', label: 'Color R', type: 'number', default: 0, min: 0, max: 255 },
             { key: 'colorG', label: 'Color G', type: 'number', default: 255, min: 0, max: 255 },
             { key: 'colorB', label: 'Color B', type: 'number', default: 0, min: 0, max: 255 }
         ],
-        doc: { signature: 'cv2.findContours + cv2.drawContours', description: 'Finds contours in a binary/edge image and draws them.', params: [{ name: 'mode', desc: 'Contour retrieval mode' }, { name: 'method', desc: 'Contour approximation method' }, { name: 'contourIdx', desc: 'Index of contour to draw (-1 = all)' }], returns: 'numpy.ndarray - Image with contours drawn' }
+        doc: { signature: 'cv2.drawContours(image, contours, contourIdx, color, thickness)', description: 'Draws contours on the image. Connect Find Contours node to provide contour data.', params: [{ name: 'contourIdx', desc: 'Index of contour to draw (-1 = all)' }, { name: 'thickness', desc: 'Line thickness' }], returns: 'numpy.ndarray - Image with contours drawn' }
     },
 
     bounding_rect: {
         label: 'Bounding Rect', category: 'contour', color: '#009688',
-        inputs: [{ id: 'image', label: 'image' }],
+        inputs: [{ id: 'image', label: 'image' }, { id: 'contours', label: 'contours' }],
         outputs: [{ id: 'image', label: 'image' }],
         properties: [
-            { key: 'mode', label: 'Retrieval Mode', type: 'select', default: 'RETR_EXTERNAL', options: ['RETR_EXTERNAL', 'RETR_LIST', 'RETR_TREE'] },
-            { key: 'method', label: 'Approximation', type: 'select', default: 'CHAIN_APPROX_SIMPLE', options: ['CHAIN_APPROX_NONE', 'CHAIN_APPROX_SIMPLE'] },
             { key: 'thickness', label: 'Thickness', type: 'number', default: 2, min: 1 },
             { key: 'colorR', label: 'Color R', type: 'number', default: 0, min: 0, max: 255 },
             { key: 'colorG', label: 'Color G', type: 'number', default: 255, min: 0, max: 255 },
             { key: 'colorB', label: 'Color B', type: 'number', default: 0, min: 0, max: 255 }
         ],
-        doc: { signature: 'cv2.boundingRect + cv2.rectangle', description: 'Draws bounding rectangles around detected contours.', params: [{ name: 'mode', desc: 'Contour retrieval mode' }], returns: 'numpy.ndarray - Image with bounding rectangles' }
+        doc: { signature: 'cv2.boundingRect + cv2.rectangle', description: 'Draws bounding rectangles around contours. Connect Find Contours node to provide contour data.', params: [{ name: 'thickness', desc: 'Line thickness' }], returns: 'numpy.ndarray - Image with bounding rectangles' }
     },
 
     min_enclosing_circle: {
         label: 'Min Enclosing Circle', category: 'contour', color: '#009688',
-        inputs: [{ id: 'image', label: 'image' }],
+        inputs: [{ id: 'image', label: 'image' }, { id: 'contours', label: 'contours' }],
         outputs: [{ id: 'image', label: 'image' }],
         properties: [
-            { key: 'mode', label: 'Retrieval Mode', type: 'select', default: 'RETR_EXTERNAL', options: ['RETR_EXTERNAL', 'RETR_LIST', 'RETR_TREE'] },
-            { key: 'method', label: 'Approximation', type: 'select', default: 'CHAIN_APPROX_SIMPLE', options: ['CHAIN_APPROX_NONE', 'CHAIN_APPROX_SIMPLE'] },
             { key: 'thickness', label: 'Thickness', type: 'number', default: 2, min: 1 },
             { key: 'colorR', label: 'Color R', type: 'number', default: 0, min: 0, max: 255 },
             { key: 'colorG', label: 'Color G', type: 'number', default: 255, min: 0, max: 255 },
             { key: 'colorB', label: 'Color B', type: 'number', default: 0, min: 0, max: 255 }
         ],
-        doc: { signature: 'cv2.minEnclosingCircle + cv2.circle', description: 'Draws minimum enclosing circles for detected contours.', params: [{ name: 'mode', desc: 'Contour retrieval mode' }], returns: 'numpy.ndarray - Image with enclosing circles' }
+        doc: { signature: 'cv2.minEnclosingCircle + cv2.circle', description: 'Draws minimum enclosing circles for contours. Connect Find Contours node to provide contour data.', params: [{ name: 'thickness', desc: 'Line thickness' }], returns: 'numpy.ndarray - Image with enclosing circles' }
     },
 
     convex_hull: {
         label: 'Convex Hull', category: 'contour', color: '#009688',
-        inputs: [{ id: 'image', label: 'image' }],
+        inputs: [{ id: 'image', label: 'image' }, { id: 'contours', label: 'contours' }],
         outputs: [{ id: 'image', label: 'image' }],
         properties: [
-            { key: 'mode', label: 'Retrieval Mode', type: 'select', default: 'RETR_EXTERNAL', options: ['RETR_EXTERNAL', 'RETR_LIST', 'RETR_TREE'] },
-            { key: 'method', label: 'Approximation', type: 'select', default: 'CHAIN_APPROX_SIMPLE', options: ['CHAIN_APPROX_NONE', 'CHAIN_APPROX_SIMPLE'] },
             { key: 'thickness', label: 'Thickness', type: 'number', default: 2, min: 1 },
             { key: 'colorR', label: 'Color R', type: 'number', default: 0, min: 0, max: 255 },
             { key: 'colorG', label: 'Color G', type: 'number', default: 255, min: 0, max: 255 },
             { key: 'colorB', label: 'Color B', type: 'number', default: 0, min: 0, max: 255 }
         ],
-        doc: { signature: 'cv2.convexHull + cv2.drawContours', description: 'Draws convex hulls around detected contours.', params: [{ name: 'mode', desc: 'Contour retrieval mode' }], returns: 'numpy.ndarray - Image with convex hulls' }
+        doc: { signature: 'cv2.convexHull + cv2.drawContours', description: 'Draws convex hulls around contours. Connect Find Contours node to provide contour data.', params: [{ name: 'thickness', desc: 'Line thickness' }], returns: 'numpy.ndarray - Image with convex hulls' }
     },
 
     approx_poly: {
         label: 'Approx Poly', category: 'contour', color: '#009688',
-        inputs: [{ id: 'image', label: 'image' }],
+        inputs: [{ id: 'image', label: 'image' }, { id: 'contours', label: 'contours' }],
         outputs: [{ id: 'image', label: 'image' }],
         properties: [
             { key: 'epsilon', label: 'Epsilon (fraction)', type: 'number', default: 0.02, step: 0.01 },
             { key: 'closed', label: 'Closed', type: 'checkbox', default: true },
-            { key: 'mode', label: 'Retrieval Mode', type: 'select', default: 'RETR_EXTERNAL', options: ['RETR_EXTERNAL', 'RETR_LIST', 'RETR_TREE'] },
-            { key: 'method', label: 'Approximation', type: 'select', default: 'CHAIN_APPROX_SIMPLE', options: ['CHAIN_APPROX_NONE', 'CHAIN_APPROX_SIMPLE'] },
             { key: 'thickness', label: 'Thickness', type: 'number', default: 2, min: 1 },
             { key: 'colorR', label: 'Color R', type: 'number', default: 0, min: 0, max: 255 },
             { key: 'colorG', label: 'Color G', type: 'number', default: 255, min: 0, max: 255 },
             { key: 'colorB', label: 'Color B', type: 'number', default: 0, min: 0, max: 255 }
         ],
-        doc: { signature: 'cv2.approxPolyDP + cv2.drawContours', description: 'Approximates contour shapes to polygons and draws them.', params: [{ name: 'epsilon', desc: 'Approximation accuracy as fraction of contour perimeter' }, { name: 'closed', desc: 'Whether the approximated curve is closed' }], returns: 'numpy.ndarray - Image with polygon approximations' }
+        doc: { signature: 'cv2.approxPolyDP + cv2.drawContours', description: 'Approximates contour shapes to polygons and draws them. Connect Find Contours node to provide contour data.', params: [{ name: 'epsilon', desc: 'Approximation accuracy as fraction of contour perimeter' }, { name: 'closed', desc: 'Whether the approximated curve is closed' }], returns: 'numpy.ndarray - Image with polygon approximations' }
     },
 
     contour_area: {
         label: 'Contour Area', category: 'contour', color: '#009688',
-        inputs: [{ id: 'image', label: 'image' }],
+        inputs: [{ id: 'image', label: 'image' }, { id: 'contours', label: 'contours' }],
         outputs: [{ id: 'image', label: 'image' }],
         properties: [
-            { key: 'mode', label: 'Retrieval Mode', type: 'select', default: 'RETR_EXTERNAL', options: ['RETR_EXTERNAL', 'RETR_LIST', 'RETR_TREE'] },
-            { key: 'method', label: 'Approximation', type: 'select', default: 'CHAIN_APPROX_SIMPLE', options: ['CHAIN_APPROX_NONE', 'CHAIN_APPROX_SIMPLE'] },
             { key: 'minArea', label: 'Min Area', type: 'number', default: 100, min: 0 },
             { key: 'maxArea', label: 'Max Area', type: 'number', default: 100000, min: 0 },
             { key: 'thickness', label: 'Thickness', type: 'number', default: 2, min: 1 },
@@ -940,21 +939,19 @@ img_output = img_input.copy()
             { key: 'colorG', label: 'Color G', type: 'number', default: 255, min: 0, max: 255 },
             { key: 'colorB', label: 'Color B', type: 'number', default: 0, min: 0, max: 255 }
         ],
-        doc: { signature: 'cv2.contourArea + cv2.drawContours', description: 'Filters contours by area range and draws matching ones.', params: [{ name: 'minArea', desc: 'Minimum contour area to include' }, { name: 'maxArea', desc: 'Maximum contour area to include' }], returns: 'numpy.ndarray - Image with area-filtered contours' }
+        doc: { signature: 'cv2.contourArea + cv2.drawContours', description: 'Filters contours by area range and draws matching ones. Connect Find Contours node to provide contour data.', params: [{ name: 'minArea', desc: 'Minimum contour area to include' }, { name: 'maxArea', desc: 'Maximum contour area to include' }], returns: 'numpy.ndarray - Image with area-filtered contours' }
     },
 
     contour_properties: {
         label: 'Contour Properties', category: 'contour', color: '#009688',
-        inputs: [{ id: 'image', label: 'image' }],
+        inputs: [{ id: 'image', label: 'image' }, { id: 'contours', label: 'contours' }],
         outputs: [{ id: 'image', label: 'image' }],
         properties: [
-            { key: 'mode', label: 'Retrieval Mode', type: 'select', default: 'RETR_EXTERNAL', options: ['RETR_EXTERNAL', 'RETR_LIST', 'RETR_TREE'] },
-            { key: 'method', label: 'Approximation', type: 'select', default: 'CHAIN_APPROX_SIMPLE', options: ['CHAIN_APPROX_NONE', 'CHAIN_APPROX_SIMPLE'] },
             { key: 'showArea', label: 'Show Area', type: 'checkbox', default: true },
             { key: 'showPerimeter', label: 'Show Perimeter', type: 'checkbox', default: true },
             { key: 'showCenter', label: 'Show Center', type: 'checkbox', default: true }
         ],
-        doc: { signature: 'cv2.contourArea + cv2.arcLength + cv2.moments', description: 'Finds contours and annotates them with area, perimeter, and center info.', params: [{ name: 'showArea', desc: 'Display area text on each contour' }, { name: 'showPerimeter', desc: 'Display perimeter text' }, { name: 'showCenter', desc: 'Display center point marker' }], returns: 'numpy.ndarray - Annotated image' }
+        doc: { signature: 'cv2.contourArea + cv2.arcLength + cv2.moments', description: 'Annotates contours with area, perimeter, and center info. Connect Find Contours node to provide contour data.', params: [{ name: 'showArea', desc: 'Display area text on each contour' }, { name: 'showPerimeter', desc: 'Display perimeter text' }, { name: 'showCenter', desc: 'Display center point marker' }], returns: 'numpy.ndarray - Annotated image' }
     },
 
     // ---- Feature (new) ----
@@ -1231,10 +1228,10 @@ img_output = img_input.copy()
 
     bitwise_xor: {
         label: 'Bitwise XOR', category: 'arithmetic', color: '#3F51B5',
-        inputs: [{ id: 'image', label: 'image' }, { id: 'image2', label: 'image2' }],
+        inputs: [{ id: 'image', label: 'image' }, { id: 'image2', label: 'image2' }, { id: 'mask', label: 'mask', optional: true }],
         outputs: [{ id: 'image', label: 'image' }],
         properties: [],
-        doc: { signature: 'cv2.bitwise_xor(src1, src2)', description: 'Per-element bitwise exclusive-or of two images.', params: [{ name: 'src1', desc: 'First input image' }, { name: 'src2', desc: 'Second input image' }], returns: 'numpy.ndarray - XOR result' }
+        doc: { signature: 'cv2.bitwise_xor(src1, src2[, dst[, mask]])', description: 'Per-element bitwise exclusive-or of two images. If mask is provided, operation is applied only where mask is non-zero.', params: [{ name: 'src1', desc: 'First input image' }, { name: 'src2', desc: 'Second input image' }, { name: 'mask', desc: 'Optional 8-bit single channel mask' }], returns: 'numpy.ndarray - XOR result' }
     },
 
     // ---- Detection (new category) ----
